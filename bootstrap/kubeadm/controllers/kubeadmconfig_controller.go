@@ -60,6 +60,8 @@ const (
 	KubeadmConfigControllerName = "kubeadmconfig-controller"
 )
 
+var ControlPlaneNodeTaint = corev1.Taint{Key: "node-role.kubernetes.io/master", Effect: corev1.TaintEffectNoSchedule}
+
 // InitLocker is a lock that is used around kubeadm init.
 type InitLocker interface {
 	Lock(ctx context.Context, cluster *clusterv1.Cluster, machine *clusterv1.Machine) bool
@@ -403,6 +405,12 @@ func (r *KubeadmConfigReconciler) handleClusterNotInitialized(ctx context.Contex
 	// injects into config.ClusterConfiguration values from top level object
 	r.reconcileTopLevelObjectSettings(ctx, scope.Cluster, machine, scope.Config)
 
+	// if the control plane Init configuration has non-nil taints, the default control plane taint will not be applied
+	// we want to ensure thatq this standard control plane taint is present in addition to other user-provided control plane taints.
+	if scope.ConfigOwner.IsControlPlaneMachine() && len(scope.Config.Spec.JoinConfiguration.NodeRegistration.Taints) > 0 {
+		scope.Config.Spec.InitConfiguration.NodeRegistration.Taints = append(scope.Config.Spec.JoinConfiguration.NodeRegistration.Taints, ControlPlaneNodeTaint)
+	}
+
 	// Add extra config to cluster config for bottlerocket
 	// Extract bottlerocket config from kubeadm
 	var bottlerocketConfig *bottlerocket.BottlerocketConfig
@@ -451,7 +459,6 @@ func (r *KubeadmConfigReconciler) handleClusterNotInitialized(ctx context.Contex
 			bottlerocketConfig.Taints = scope.Config.Spec.InitConfiguration.NodeRegistration.Taints
 		}
 	}
-
 	clusterdata, err := kubeadmtypes.MarshalClusterConfigurationForVersion(scope.Config.Spec.ClusterConfiguration, parsedVersion)
 	if err != nil {
 		scope.Error(err, "Failed to marshal cluster configuration")
@@ -634,6 +641,12 @@ func (r *KubeadmConfigReconciler) joinControlplane(ctx context.Context, scope *S
 
 	if scope.Config.Spec.JoinConfiguration.ControlPlane == nil {
 		scope.Config.Spec.JoinConfiguration.ControlPlane = &bootstrapv1.JoinControlPlane{}
+	}
+
+	// if the control plane Join configuration has non-nil taints, the default control plane taint will not be applied
+	// we want to ensure that this standard control plane taint is present in addition to other user-provided control plane taints.
+	if len(scope.Config.Spec.JoinConfiguration.NodeRegistration.Taints) > 0 {
+		scope.Config.Spec.JoinConfiguration.NodeRegistration.Taints = append(scope.Config.Spec.JoinConfiguration.NodeRegistration.Taints, ControlPlaneNodeTaint)
 	}
 
 	certificates := secret.NewControlPlaneJoinCerts(scope.Config.Spec.ClusterConfiguration)
